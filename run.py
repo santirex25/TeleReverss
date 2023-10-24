@@ -94,7 +94,7 @@ def ParseSignal(signal: str) -> dict:
         trade['Entry'] = 'NOW'
     
     
-    trade['TP'] = [float((signal[5].split())[-1])]
+    trade['TP'] = float((signal[5].split())[-1])
 
     # # checks if there's a fourth line and parses it for TP2
     # if(len(signal) > 4):
@@ -104,7 +104,7 @@ def ParseSignal(signal: str) -> dict:
     # if(len(signal) > 5):
     #     trade['TP'].append(float(signal[5].split()[-1]))
 
-    trade['StopLoss'] = float((signal[6].split())[-1])
+    trade['StopLoss'] = [float((signal[6].split())[-1])]
     
     # adds risk factor to trade
     trade['RiskFactor'] = RISK_FACTOR
