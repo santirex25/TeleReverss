@@ -37,6 +37,8 @@ SYMBOLS = ['AUDCAD', 'AUDCHF', 'AUDJPY', 'AUDNZD', 'AUDUSD', 'CADCHF', 'CADJPY',
 # RISK FACTOR
 RISK_FACTOR = float(os.environ.get("RISK_FACTOR"))
 
+lotaje_porcentajes = [1.0, 0.2, 0.1]
+
 # Helper Functions
 def ParseSignal(signal: str) -> dict:
     """Starts process of parsing signal and entering trade on MetaTrader account.
@@ -52,11 +54,10 @@ def ParseSignal(signal: str) -> dict:
     signal = signal.splitlines()
     signal = [line.rstrip() for line in signal]
 
-
     trade = {}
     
     # extracts symbol from trade signal
-    trade['Symbol'] = 'XAUUSD'
+    trade['Symbol'] = (signal[0][1:]).upper()
     
     # checks if the symbol is valid, if not, returns an empty dictionary
     if(trade['Symbol'] not in SYMBOLS):
@@ -75,10 +76,10 @@ def ParseSignal(signal: str) -> dict:
     elif('Sell Stop'.lower() in signal[0].lower()):
          trade['OrderType'] = 'Sell Stop'
 
-    elif('Buy'.lower() in (signal[0].split())[1].lower()):
+    elif('Buy'.lower() in signal[1].lower()):
         trade['OrderType'] = 'Buy'
     
-    elif('Sell'.lower() in (signal[0].split())[1].lower()):
+    elif('Sell'.lower() in signal[1].lower()):
         trade['OrderType'] = 'Sell'
     
     # returns an empty dictionary if an invalid order type was given
@@ -91,16 +92,21 @@ def ParseSignal(signal: str) -> dict:
     
     else:
         trade['Entry'] = 'NOW'
-
-    trade['StopLoss'] = float((signal[2].split())[-1])
+    
+    
     trade['TP'] = [float((signal[5].split())[-1])]
 
     # # checks if there's a fourth line and parses it for TP2
+    # if(len(signal) > 4):
+    #     trade['TP'].append(float(signal[4].split()[-1]))
+
+    # # checks if there's a fourth line and parses it for TP3
     # if(len(signal) > 5):
     #     trade['TP'].append(float(signal[5].split()[-1]))
+
+    trade['StopLoss'] = float((signal[6].split())[-1])
     
     # adds risk factor to trade
-    
     trade['RiskFactor'] = RISK_FACTOR
 
     return trade
@@ -243,11 +249,11 @@ async def ConnectMetaTrader(update: Update, trade: dict, enterTrade: bool):
 
             # uses bid price if the order type is a buy
             if(trade['OrderType'] == 'Buy'):
-                trade['Entry'] = float(price['bid']+0.30)
+                trade['Entry'] = float(price['bid'])
 
             # uses ask price if the order type is a sell
             if(trade['OrderType'] == 'Sell'):
-                trade['Entry'] = float(price['ask']-0.30)
+                trade['Entry'] = float(price['ask'])
 
         # produces a table with trade information
         GetTradeInformation(update, trade, account_information['balance'])
@@ -261,8 +267,20 @@ async def ConnectMetaTrader(update: Update, trade: dict, enterTrade: bool):
             try:
                 # executes buy market execution order
                 if(trade['OrderType'] == 'Buy'):
-                    for takeProfit in trade['TP']:
-                        result = await connection.create_market_buy_order(trade['Symbol'], trade['PositionSize'] / len(trade['TP']), trade['StopLoss'], 0.00)
+                    position_size = trade['PositionSize']
+                    tp_values = trade['TP']
+                    total_tp_count = len(tp_values)
+                    # Calculate lot sizes for each take profit level using the specified percentages
+                    lot_sizes = [position_size * percentage for percentage in lotaje_porcentajes]
+
+                    for i in range(total_tp_count):
+                        take_profit = tp_values[i]
+                        lot_size = lot_sizes[i]
+                        result = await connection.create_market_buy_order(trade['Symbol'], lot_size, trade['StopLoss'], take_profit)
+
+                    # for takeProfit in trade['TP']:
+                    #  result = await connection.create_market_buy_order(trade['Symbol'], trade['PositionSize'] / len(trade['TP']), trade['StopLoss'], takeProfit)
+
 
                 # executes buy limit order
                 elif(trade['OrderType'] == 'Buy Limit'):
@@ -276,8 +294,16 @@ async def ConnectMetaTrader(update: Update, trade: dict, enterTrade: bool):
 
                 # executes sell market execution order
                 elif(trade['OrderType'] == 'Sell'):
-                    for takeProfit in trade['TP']:
-                        result = await connection.create_market_sell_order(trade['Symbol'], trade['PositionSize'] / len(trade['TP']), trade['StopLoss'], 0.00)
+                    position_size = trade['PositionSize']
+                    tp_values = trade['TP']
+                    total_tp_count = len(tp_values)
+                    # Calculate lot sizes for each take profit level using the specified percentages
+                    lot_sizes = [position_size * percentage for percentage in lotaje_porcentajes]
+
+                    for i in range(total_tp_count):
+                        take_profit = tp_values[i]
+                        lot_size = lot_sizes[i]
+                        result = await connection.create_market_sell_order(trade['Symbol'], lot_size, trade['StopLoss'], take_profit)
 
                 # executes sell limit order
                 elif(trade['OrderType'] == 'Sell Limit'):
@@ -306,77 +332,6 @@ async def ConnectMetaTrader(update: Update, trade: dict, enterTrade: bool):
     
     return
 
-async def CloseAllPositions(update: Update):
-    update.effective_message.reply_text("All open positions have been closed.")
-    api = MetaApi(API_KEY)
-    
-    try:
-        account = await api.metatrader_account_api.get_account(ACCOUNT_ID)
-        initial_state = account.state
-        deployed_states = ['DEPLOYING', 'DEPLOYED']
-
-        if initial_state not in deployed_states:
-            #  wait until account is deployed and connected to broker
-            logger.info('Deploying account')
-            await account.deploy()
-
-        logger.info('Waiting for API server to connect to broker ...')
-        await account.wait_connected()
-
-        # connect to MetaApi API
-        connection = account.get_rpc_connection()
-        await connection.connect()
-
-        # wait until terminal state synchronized to the local state
-        logger.info('Waiting for SDK to synchronize to terminal state ...')
-        await connection.wait_synchronized()
-
-        # obtains account information from MetaTrader server
-        account_information = await connection.get_account_information()
-
-        update.effective_message.reply_text("Successfully connected to MetaTrader!\nCerrando operaciones ... 🤔")
-
-        # Obtiene las posiciones abiertas
-        positions = await connection.get_positions()
-
-        # Cierra todas las posiciones abiertas
-        for position in positions:
-            await connection.close_position(position['id'])
-
-        update.effective_message.reply_text("Todas las posiciones se han cerrado con éxito.")
-
-
-
-        # # checks if the order is a market execution to get the current price of symbol
-        # if(trade['Entry'] == 'NOW'):
-        #     price = await connection.get_symbol_price(symbol=trade['Symbol'])
-
-        #     # uses bid price if the order type is a buy
-        #     if(trade['OrderType'] == 'Buy'):
-        #         trade['Entry'] = float(price['bid'])
-
-        #     # uses ask price if the order type is a sell
-        #     if(trade['OrderType'] == 'Sell'):
-        #         trade['Entry'] = float(price['ask'])
-
-        # # produces a table with trade information
-        # GetTradeInformation(update, trade, account_information['balance'])
-            
-        # # checks if the user has indicated to enter trade
-        # if(enterTrade == True):
-
-        #     # enters trade on to MetaTrader account
-        #     update.effective_message.reply_text("Entering trade on MetaTrader Account ... 👨🏾‍💻")
-
-            
-    
-    except Exception as error:
-        logger.error(f'Error: {error}')
-        update.effective_message.reply_text(f"Error al cerrar las posiciones: There was an issue with the connection 😕\n\nError Message:\n{error}")
-    
-    return
-
-
 
 # Handler Functions
 def PlaceTrade(update: Update, context: CallbackContext) -> int:
@@ -387,18 +342,6 @@ def PlaceTrade(update: Update, context: CallbackContext) -> int:
         context: CallbackContext object that stores commonly used objects in handler callbacks
     """
 
-    if(context.user_data['trade'] != None):
-        if update.effective_message.photo:
-            update.effective_message.reply_text("Se ha detectado vuestra imagen🥳⏰")
-            # Remove the image part from the update.effective_message
-            message_text = update.effective_message.caption.lower() if update.effective_message.caption else ""
-
-            if "tp2" in message_text:
-                update.effective_message.reply_text("All open positions have been closed.")
-                asyncio.run(CloseAllPositions(update))
-            else:
-                raise Exception('Invalid Trade')
-
     # checks if the trade has already been parsed or not
     if(context.user_data['trade'] == None):
 
@@ -408,62 +351,13 @@ def PlaceTrade(update: Update, context: CallbackContext) -> int:
             
             # checks if there was an issue with parsing the trade
             if(not(trade)):
-                
-                if update.effective_message.photo:
-                    update.effective_message.reply_text("Se ha detectado vuestra imagen🥳⏰")
-                    # Remove the image part from the update.effective_message
-                    message_text = update.effective_message.caption.lower() if update.effective_message.caption else ""
-
-                    if "tp2" in message_text:
-                        update.effective_message.reply_text("All open positions have been closed.")
-                        asyncio.run(CloseAllPositions(update))
-                    else:
-                        raise Exception('Invalid Trade')
-                    
-
-                else:
-                    message_text = update.effective_message.text.lower()
-                    
-
-                if update.effective_message.text:
-
-                    message_text = update.effective_message.text.lower()
-
-                    if "tp2" in message_text:
-                        update.effective_message.reply_text("All open positions have been closed.")
-                        asyncio.run(CloseAllPositions(update))
-                    else:
-                        raise Exception('Invalid Trade')
-                else:
-                    raise Exception('No Text')
-            if update.effective_message.text:
-                # parses signal from Telegram message
-                trade = ParseSignal(update.effective_message.text)
-                
-                # checks if there was an issue with parsing the trade
-                if(not(trade)):
-                    
-
-                        message_text = update.effective_message.text.lower()
-
-                        if "tp2" in message_text:
-                            update.effective_message.reply_text("All open positions have been closed.")
-                            asyncio.run(CloseAllPositions(update))
-                        else:
-                            raise Exception('Invalid Trade')
-            else:
-                raise Exception('No Text')
+                raise Exception('Invalid Trade')
 
             # sets the user context trade equal to the parsed trade
             context.user_data['trade'] = trade
             update.effective_message.reply_text("Trade Successfully Parsed! 🥳\nConnecting to MetaTrader ... \n(May take a while) ⏰")
         
         except Exception as error:
-            if update.effective_message.photo:
-                    update.effective_message.reply_text("Se ha detectado vuestra imagen🥳⏰")
-                    message_text = update.effective_message.caption.lower()
-                    if "tp2" in message_text:
-                            asyncio.run(CloseAllPositions(update))
             logger.error(f'Error: {error}')
             errorMessage = f"Hubo un error parcero 😕\n\nError: {error}\n\n /cancel"
             update.effective_message.reply_text(errorMessage)
@@ -501,7 +395,6 @@ def CalculateTrade(update: Update, context: CallbackContext) -> int:
             # sets the user context trade equal to the parsed trade
             context.user_data['trade'] = trade
             update.effective_message.reply_text("Trade Successfully Parsed! 🥳\nConnecting to MetaTrader ... (May take a while) ⏰")
-            
         
         except Exception as error:
             logger.error(f'Error: {error}')
@@ -544,7 +437,7 @@ def welcome(update: Update, context: CallbackContext) -> None:
         context: CallbackContext object that stores commonly used objects in handler callbacks
     """
 
-    welcome_message = "Modificación para que no pregunte /trade Pruba 9.9 REBirth Welcome to the FX Signal Copier Telegram Bot! 💻💸\n\nYou can use this bot to enter trades directly from Telegram and get a detailed look at your risk to reward ratio with profit, loss, and calculated lot size. You are able to change specific settings such as allowed symbols, risk factor, and more from your personalized Python script and environment variables.\n\nUse the /help command to view instructions and example trades."
+    welcome_message = "Modificación para que no pregunte /trade Welcome to the FX Signal Copier Telegram Bot! 💻💸\n\nYou can use this bot to enter trades directly from Telegram and get a detailed look at your risk to reward ratio with profit, loss, and calculated lot size. You are able to change specific settings such as allowed symbols, risk factor, and more from your personalized Python script and environment variables.\n\nUse the /help command to view instructions and example trades."
     
     # sends messages to user
     update.effective_message.reply_text(welcome_message)
@@ -656,7 +549,7 @@ def main() -> None:
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler("trade", Trade_Command), CommandHandler("calculate", Calculation_Command)],
         states={
-            TRADE: [MessageHandler(Filters.all & ~Filters.command, PlaceTrade)],
+            TRADE: [MessageHandler(Filters.text & ~Filters.command, PlaceTrade)],
             CALCULATE: [MessageHandler(Filters.text & ~Filters.command, CalculateTrade)],
             DECISION: [CommandHandler("yes", PlaceTrade), CommandHandler("no", cancel)]
         },
@@ -667,7 +560,7 @@ def main() -> None:
     dp.add_handler(conv_handler)
 
     # message handler for all messages that are not included in conversation handler
-    dp.add_handler(MessageHandler(Filters.all, PlaceTrade))
+    dp.add_handler(MessageHandler(Filters.text, PlaceTrade))
 
     # log all errors
     dp.add_error_handler(error)
